@@ -1,8 +1,9 @@
 import express from 'express';
 import axios from 'axios';
+import { FlashLoanArbitrageABI } from './contracts/FlashLoanArbitrage.sol/FlashLoanArbitrage.json';
 import { ethers } from 'ethers';
-import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -66,7 +67,7 @@ function recordOpportunity(route, profit, steps, gasFee, flashLoanAmount, totalM
 // Endereço da API e do RPC da Polygon
 const PARA_SWAP_API = "https://api.paraswap.io/prices";
 const POLYGON_RPC = process.env.POLYGON_RPC;
-const provider = new ethers.JsonRpcProvider(POLYGON_RPC);
+const provider = new ethers.JsonRpcProvider(POLYGON_RPC)
 
 // Cache de preços para evitar requisições duplicadas
 let priceCache = {};
@@ -80,143 +81,113 @@ async function getBestPrice(srcToken, destToken, amount) {
     console.log(`⚡ Cache hit for ${srcToken} → ${destToken}`);
     return priceCache[cacheKey];
   }
-  // Implementação do rate limiting
+
+  // Verifica se já passou tempo suficiente desde a última requisição (1 segundo)
   const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
-  if (timeSinceLastRequest < 2000) {
-    const delay = 1000 - timeSinceLastRequest;
+  if (now - lastRequestTime < 1000) {
+    const delay = 1000 - (now - lastRequestTime);
     console.log(`⏳ Aguardando ${delay}ms para evitar rate limit...`);
-    await sleep(delay);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
+
   try {
-    console.log(`🔍 Buscando preço para ${srcToken} → ${destToken}...`);
-    const decimalsSrc = TOKENS[srcToken].decimals;
-    const weiAmount = ethers.parseUnits(amount.toString(), decimalsSrc).toString();
-    const response = await axios.get(PARA_SWAP_API, {
-      params: {
-        srcToken: TOKENS[srcToken].address,
-        destToken: TOKENS[destToken].address,
-        amount: weiAmount,
-        side: "SELL",
-        network: 137,
-      },
-      headers: { "Content-Type": "application/json" },
-    });
-    lastRequestTime = Date.now();
-    if (!response.data || !response.data.priceRoute) return null;
-    const priceRoute = response.data.priceRoute;
-    if (priceRoute.maxImpactReached) {
-      console.log(`💡 Impacto máximo atingido para ${srcToken} → ${destToken}, ignorando rota.`);
+    console.log(`Fetching price for ${srcToken} → ${destToken}...`);
+    const response = await axios.get(
+      `${PARA_SWAP_API}?srcToken=${TOKENS[srcToken].address}&destToken=${TOKENS[destToken].address}&amount=${amount * (10 ** TOKENS[srcToken].decimals)}&srcDecimals=${TOKENS[srcToken].decimals}&destDecimals=${TOKENS[destToken].decimals}`
+    );
+
+    lastRequestTime = Date.now(); // Atualiza o tempo da última requisição
+
+    const priceData = response.data.priceRoute;
+    if (!priceData) {
+      console.log(`No price data found for ${srcToken} → ${destToken}`);
       return null;
     }
-    if (!priceRoute.destAmount || !priceRoute.bestRoute) return null;
-    const decimalsDest = TOKENS[destToken].decimals;
-    const normalizedAmount = parseFloat(priceRoute.destAmount) / 10 ** decimalsDest;
-    const bestExchange = priceRoute.bestRoute[0]?.swaps[0]?.swapExchanges[0]?.exchange || "Desconhecida";
-    const result = { amount: normalizedAmount, dex: bestExchange };
-    priceCache[cacheKey] = result;
-    return result;
+    const destAmount = priceData.destAmount / (10 ** TOKENS[destToken].decimals);
+
+    // Armazena o resultado no cache
+    priceCache[cacheKey] = {
+      amount: destAmount,
+      route: priceData,
+    };
+
+    return priceCache[cacheKey];
   } catch (error) {
-    if (
-      error.response &&
-      error.response.data &&
-      error.response.data.error === "ESTIMATED_LOSS_GREATER_THAN_MAX_IMPACT"
-    ) {
-      console.log(`💡 Impacto de preço muito alto para ${srcToken} → ${destToken}, ignorando rota.`);
-      return null;
-    }
-    console.error("❌ Erro ao obter preço:", error.response?.data || error.message);
+    console.error(`Error fetching price for ${srcToken} → ${destToken}:`, error);
     return null;
   }
 }
 
-// Função para estimar o custo de gas com base na média informada: 0.0075 MATIC (~$0.0067)
-async function estimateGas() {
-  return 0.0075;
+// Função para calcular a rota de arbitragem e o lucro potencial
+async function calculateArbitrage(startToken, middleToken, endToken) {
+  const price1 = await getBestPrice(startToken, middleToken, TRADE_AMOUNT);
+  if (!price1) return null;
+
+  const price2 = await getBestPrice(middleToken, endToken, price1.amount);
+  if (!price2) return null;
+
+  const profit = (price2.amount - TRADE_AMOUNT) * SCALING_FACTOR;
+  const profitPercentage = (profit / (TRADE_AMOUNT * SCALING_FACTOR)) * 100;
+
+  return {
+    route: [startToken, middleToken, endToken],
+    profit: profit,
+    steps: [price1.route, price2.route],
+    profitPercentage: profitPercentage
+  };
 }
 
-// Função para calcular o lucro em USDC
-function calculateProfit(initial, final, gasCost) {
-  return final - initial - gasCost;
-}
-
-// Função principal para verificar as rotas de arbitragem
+// Função principal para verificar oportunidades de arbitragem
 async function checkArbitrage() {
-  console.log("🔍 Simulando arbitragem na Polygon...");
-  priceCache = {}; // Limpa o cache a cada ciclo
-  const amount = TRADE_AMOUNT;
-  const gasFee = await estimateGas();
-  if (!gasFee) {
-    console.log("⚠️ Erro ao obter estimativa de gas. Abortando...");
-    return;
-  }
+  let bestOpportunity = null;
   let bestProfit = -Infinity;
-  let bestRoute = null;
-  let bestMovimentacao = 0;
-  let bestLogs = "";
-  let bestStep1 = null;
-  let bestStep2 = null;
 
-  // Gera as rotas: USDC → token → USDC (para cada token, exceto USDC)
   const tokens = Object.keys(TOKENS);
-  const routes = tokens.filter(t => t !== "USDC").map(t => ["USDC", t, "USDC"]);
 
-  for (const route of routes) {
-    console.log("🔄 Verificando rota:", route.join(" → "));
-    const step1 = await getBestPrice(route[0], route[1], amount);
-    if (!step1) continue;
-    const step2 = await getBestPrice(route[1], route[2], step1.amount);
-    if (!step2) continue;
-    const profit = calculateProfit(amount, step2.amount, gasFee);
-    const profitPercentage = (profit / amount) * 100;
-    console.log(`💰 Lucro potencial para rota ${route.join(" → ")}: ${profit.toFixed(6)} USDC (${profitPercentage.toFixed(4)}%)`);
-    if (profit < MIN_PROFIT_THRESHOLD || profitPercentage < MIN_PROFIT_PERCENTAGE) {
-      console.log(`📉 Lucro abaixo dos critérios mínimos para a rota ${route.join(" → ")}, ignorando.`);
-      continue;
-    }
-    if (profit > bestProfit) {
-      bestProfit = profit;
-      bestRoute = route;
-      bestMovimentacao = step2.amount;
-      bestStep1 = step1;
-      bestStep2 = step2;
-      bestLogs =
-        `🔹 ${route[0]} → ${step1.amount.toFixed(6)} ${route[1]} via ${step1.dex}\n` +
-        `🔹 ${route[1]} → ${step2.amount.toFixed(6)} ${route[2]} via ${step2.dex}`;
+  for (let i = 0; i < tokens.length; i++) {
+    for (let j = 0; j < tokens.length; j++) {
+      if (i === j) continue; // Evita comparar o mesmo token
+
+      const opportunity = await calculateArbitrage("USDC", tokens[i], "USDC");
+      if (opportunity && opportunity.profit > bestProfit) {
+        bestProfit = opportunity.profit;
+        bestOpportunity = opportunity;
+      }
     }
   }
 
-  if (bestProfit >= MIN_PROFIT_THRESHOLD && bestRoute && bestStep1 && bestStep2) {
-    const scaledProfit = bestProfit * SCALING_FACTOR;
-    const profitPercentage = (bestProfit / TRADE_AMOUNT) * 100;
-    console.log("💰 Melhor rota encontrada:", bestRoute.join(" → "));
-    console.log(bestLogs);
-    console.log(`💰 Gas Fee estimado: ${gasFee.toFixed(6)} MATIC`);
-    console.log(`💸 Flash Loan utilizado: ${FLASH_LOAN_AMOUNT} USDC`);
-    console.log(`🔄 Total movimentado (valor base): ${bestMovimentacao.toFixed(6)} USDC`);
-    console.log(`🚀 Lucro final estimado (escalado): ${scaledProfit.toFixed(6)} USDC`);
-    recordOpportunity(
-      bestRoute.join(" → "),
-      scaledProfit,
-      [
-        {
-          from: bestRoute[0],
-          to: bestRoute[1],
-          amount: TRADE_AMOUNT,
-          dex: bestStep1.dex
-        },
-        {
-          from: bestRoute[1],
-          to: bestRoute[2],
-          amount: bestStep1.amount,
-          dex: bestStep2.dex
+    // Estima o custo de gás da transação
+    let gasFee = 0;
+    if (bestOpportunity && bestOpportunity.steps) {
+        try {
+            const gasPromises = bestOpportunity.steps.map(async (step) => {
+                if (step && step.gasCostUSD) {
+                    // Converte o custo de gás de USD para ETH usando o preço atual do ETH
+                    const ethPriceUSD = await getEthPrice(); // Implementar getEthPrice()
+                    if (ethPriceUSD) {
+                        return parseFloat(step.gasCostUSD) / ethPriceUSD;
+                    }
+                }
+                return 0;
+            });
+
+            const gasCosts = await Promise.all(gasPromises);
+            gasFee = gasCosts.reduce((acc, val) => acc + val, 0);
+
+        } catch (error) {
+            console.error("Erro ao estimar o custo do gás:", error);
+            gasFee = 0; // Define como 0 em caso de erro
         }
-      ],
-      gasFee,
-      FLASH_LOAN_AMOUNT,
-      bestMovimentacao,
-      profitPercentage
-    );
+    }
+
+  // Verifica se a oportunidade atende aos critérios mínimos de lucro
+  if (bestOpportunity && bestOpportunity.profit > MIN_PROFIT_THRESHOLD && bestOpportunity.profitPercentage >= MIN_PROFIT_PERCENTAGE) {
+      const totalMovimentado = (bestOpportunity.profit + TRADE_AMOUNT * SCALING_FACTOR);
+      console.log(`✨ Oportunidade encontrada! Lucro: ${bestOpportunity.profit.toFixed(6)} USDC (${bestOpportunity.profitPercentage.toFixed(2)}%)`);
+      console.log("Rota:", bestOpportunity.route);
+      console.log("Custo estimado do gás (em ETH):", gasFee);
+      console.log("Total movimentado na transação:", totalMovimentado.toFixed(2), "USDC");
+      recordOpportunity(bestOpportunity.route, bestOpportunity.profit, bestOpportunity.steps, gasFee, FLASH_LOAN_AMOUNT, totalMovimentado, bestOpportunity.profitPercentage);
   } else {
     console.log("⚠️ Nenhuma arbitragem com lucro suficiente encontrada. Lucro máximo:", bestProfit.toFixed(6), "USDC");
   }
@@ -279,7 +250,33 @@ app.post("/api/opportunities/reset", (req, res) => {
   res.json({ message: "Log resetado." });
 });
 
+// Endpoint para executar o flash loan
+app.post("/api/execute_flashloan", async (req, res) => {
+    try {
+        const provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC);
+        const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+
+        // Obtenha o contrato já deployado, utilizando o endereço (pode vir do .env ou de um arquivo de configuração)
+        const flashLoanAddress = process.env.FLASHLOAN_CONTRACT_ADDRESS;
+        const flashLoanContract = new ethers.Contract(flashLoanAddress, FlashLoanArbitrageABI, signer);
+
+        // Configure os parâmetros do flash loan
+        const asset = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // Por exemplo, USDC
+        const amount = ethers.parseUnits("1000", 6); // Valor do empréstimo
+
+        // Envie a transação
+        const tx = await flashLoanContract.initiateFlashLoan(asset, amount);
+        const receipt = await tx.wait();
+
+        // Retorne o resultado ou os logs da operação
+        res.json({ message: "Flash loan executado", receipt });
+    } catch (error) {
+      console.error("Erro na execução do flash loan:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
 // Inicia o servidor na porta definida
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
