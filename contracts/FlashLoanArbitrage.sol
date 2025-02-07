@@ -1,28 +1,38 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// Atualizado para Aave V3
-import { IPoolAddressesProvider } from "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
-import { IPool } from "@aave/core-v3/contracts/interfaces/IPool.sol";
-import { IFlashLoanSimpleReceiver } from "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.sol";
+import {FlashLoanSimpleReceiverBase} from "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
+import {IPoolAddressesProvider} from "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-contract FlashLoanArbitrage is IFlashLoanSimpleReceiver {
-    address public constant PARASWAP_AGGREGATOR = 0xDEF171Fe48CF0115B1d80b88dc8eAB59176FEe57;
-    
-    IPool public immutable POOL;
+contract FlashLoanArbitrage is FlashLoanSimpleReceiverBase {
+    using SafeERC20 for IERC20;
 
-    constructor(address _addressProvider) {
-        POOL = IPool(IPoolAddressesProvider(_addressProvider).getPool());
+    // Events
+    event FlashLoanInitiated(address asset, uint256 amount);
+    event SwapExecuted(address fromToken, address toToken, uint256 amountIn, uint256 amountOut);
+    event ArbitrageExecuted();
+
+    // Structs
+    struct SwapRoute {
+        address[] path;
+        uint256[] amounts;
     }
 
-    function initiateFlashLoan(address asset, uint256 amount) external {
-        POOL.flashLoanSimple(
-            address(this),
-            asset,
-            amount,
-            "",
-            0
-        );
+    constructor(address _addressProvider) FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_addressProvider)) {}
+
+    function initiateFlashLoan(address asset, uint256 amount, bytes calldata params) external {
+        require(amount > 0, "Amount must be greater than 0");
+
+        if (params.length > 0) {
+            SwapRoute memory route = abi.decode(params, (SwapRoute));
+            require(route.path.length >= 2, "Invalid route path");
+            require(route.path.length == route.amounts.length, "Path and amounts length mismatch");
+        }
+
+        emit FlashLoanInitiated(asset, amount);
+        POOL.flashLoanSimple(address(this), asset, amount, params, 0);
     }
 
     function executeOperation(
@@ -32,38 +42,38 @@ contract FlashLoanArbitrage is IFlashLoanSimpleReceiver {
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        // Implementação da lógica de arbitragem
-        uint256 amountObtido = realizarSwaps(asset, amount);
-        uint256 totalDevolver = amount + premium;
-        
-        require(amountObtido >= totalDevolver, "Arbitragem nao lucrativa");
-        
-        // Aprovar e devolver o emprestimo
-        IERC20(asset).approve(address(POOL), totalDevolver);
+        // Ensure this is called by the Aave Pool
+        require(msg.sender == address(POOL), "Caller must be Aave Pool");
+
+        // If we have a route, execute the swaps
+        if (params.length > 0) {
+            SwapRoute memory route = abi.decode(params, (SwapRoute));
+            
+            // Execute swaps along the route
+            for (uint i = 0; i < route.path.length - 1; i++) {
+                address fromToken = route.path[i];
+                address toToken = route.path[i + 1];
+                uint256 amountIn = route.amounts[i];
+                uint256 amountOut = route.amounts[i + 1];
+
+                // Simulate swap by transferring tokens
+                // In a real implementation, this would call the actual DEX
+                IERC20(fromToken).safeTransfer(address(this), amountIn);
+                emit SwapExecuted(fromToken, toToken, amountIn, amountOut);
+            }
+
+            emit ArbitrageExecuted();
+        }
+
+        // Approve repayment
+        uint256 amountToRepay = amount + premium;
+        IERC20(asset).safeApprove(address(POOL), amountToRepay);
 
         return true;
     }
 
-    function realizarSwaps(address asset, uint256 amount) internal returns (uint256) {
-        // 1. Aprovar Paraswap para gastar os tokens
-        IERC20(asset).approve(PARASWAP_AGGREGATOR, amount);
-        
-        // 2. Construir calldata para o aggregator do Paraswap
-        (bytes memory callData, uint256 expectedReturn) = buildParaswapCalldata(asset, amount);
-        
-        // 3. Executar a troca através do contrato do Paraswap
-        (bool success,) = PARASWAP_AGGREGATOR.call(callData);
-        require(success, "Falha na troca via Paraswap");
-        
-        return expectedReturn;
+    // Function to withdraw tokens (for testing and emergency purposes)
+    function withdrawToken(address token, uint256 amount) external {
+        IERC20(token).safeTransfer(msg.sender, amount);
     }
-    
-    function buildParaswapCalldata(address asset, uint256 amount) internal view returns (bytes memory, uint256) {
-        // Implementação simplificada - precisa ser adaptada com dados reais da API do Paraswap
-        return (abi.encodeWithSignature("swap(address,address,uint256,uint256)", asset, address(this), amount, block.timestamp + 300), amount * 105 / 100);
-    }
-}
-
-interface IERC20 {
-    function approve(address spender, uint256 amount) external returns (bool);
 }

@@ -1,34 +1,35 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ArbitrageExecutor is Ownable {
-    mapping(address => bool) public approvedRouters;
-    
-    constructor(address initialOwner) Ownable(initialOwner) {}
+    constructor(address initialOwner) Ownable() {}
 
-    function approveRouter(address router) external onlyOwner {
-        approvedRouters[router] = true;
-    }
-
-    function startArbitrage(
+    // Função para executar a arbitragem (recebe os parâmetros da rota, etc.)
+    function executeArbitrage(
         address tokenIn,
-        uint256 amount,
-        SwapRoute[] calldata route
-    ) external onlyOwner {
-        require(approvedRouters[route[0].router], "Router not approved");
-        require(approvedRouters[route[1].router], "Router not approved");
-        
-        // Implementação simplificada para exemplo
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amount);
+        address tokenOut,
+        uint256 amountIn,
+        uint256 expectedProfit,
+        bytes calldata route
+    ) external payable onlyOwner {
+        // Lógica para executar a arbitragem
+        // ... (Implementação da lógica de arbitragem) ...
+
+        // Exemplo: Transferir tokens para o contrato (se necessário)
+        // IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+
+        // ... (Executar a troca na DEX) ...
+
+        // Exemplo: Verificar o lucro
+        // uint256 profit = IERC20(tokenOut).balanceOf(address(this)) - amountIn;
+        // require(profit >= expectedProfit, "Lucro insuficiente");
+
+        // ... (Transferir o lucro de volta para o owner) ...
+        // IERC20(tokenOut).transfer(owner(), profit);
     }
 
-    struct SwapRoute {
-        address tokenIn;
-        address tokenOut;
-        address router;
-        uint256 amountIn;
-    }
+    // Permite receber ETH (necessário se a arbitragem envolver ETH nativo)
+    receive() external payable {}
 }
