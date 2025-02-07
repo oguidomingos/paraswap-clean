@@ -4,12 +4,12 @@ const { ethers, network } = require("hardhat");
 describe("FlashLoanArbitrage", function () {
   let flashLoan, owner;
   let USDC, WETH;
-  // Polygon mainnet addresses with correct checksums
-  const AAVE_PROVIDER_ADDRESS = "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb";
-  const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
-  const WETH_ADDRESS = "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619";
-  const AAVE_POOL = "0x794a61358D6845594F94dc1DB02A252b5b4814aD";
-  const USDC_WHALE = "0xf89d7b9c864f589bbF53a82105107622B35EaA40";
+  // Polygon mainnet addresses
+  const AAVE_PROVIDER_ADDRESS = "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb"; // Aave V3 Pool Addresses Provider
+  const USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC on Polygon
+  const WETH_ADDRESS = "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"; // WETH on Polygon
+  const AAVE_POOL = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"; // Aave V3 Pool
+  const USDC_WHALE = "0x06959153B974D0D5E1a1c0947FF2Ed7324F72c76"; // USDC whale on Polygon
 
   before(async function () {
     // Increase timeout for forked network operations
