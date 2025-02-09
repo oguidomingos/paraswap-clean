@@ -87,11 +87,43 @@ router.get('/prices', async (req, res) => {
 // Execute flash loan arbitrage
 router.post('/execute', async (req, res) => {
   try {
-    const result = { transactionHash: `0x${Math.random().toString(16).slice(2)}` };
-    res.json(result);
+    const { tokens, amounts, data } = req.body;
+    
+    // Setup provider and signer
+    const provider = new ethers.providers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
+    const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    
+    // Connect to contract
+    const flashLoanArbitrage = new ethers.Contract(
+      process.env.FLASHLOAN_CONTRACT_ADDRESS,
+      [
+        "function initiateFlashLoan(address[] memory assets, uint256[] memory amounts, bytes memory params) public"
+      ],
+      wallet
+    );
+
+    // Execute flash loan
+    const tx = await flashLoanArbitrage.initiateFlashLoan(
+      tokens,
+      amounts,
+      data
+    );
+
+    // Wait for transaction confirmation
+    const receipt = await tx.wait();
+
+    res.json({
+      transactionHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      status: receipt.status === 1 ? 'success' : 'failed'
+    });
   } catch (error) {
     console.error('Error executing arbitrage:', error);
-    res.status(500).json({ error: 'Failed to execute arbitrage' });
+    res.status(500).json({ 
+      error: 'Failed to execute arbitrage',
+      details: error.message 
+    });
   }
 });
 

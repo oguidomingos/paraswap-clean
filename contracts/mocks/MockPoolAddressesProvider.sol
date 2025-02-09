@@ -20,14 +20,20 @@ contract MockPoolAddressesProvider is IPoolAddressesProvider {
         return poolConfigurator;
     }
 
+    // Implementation for setting pool address
+    function setPoolImpl(address newPoolImpl) external override {
+        pool = newPoolImpl;
+    }
+
     // Minimal implementations for other required functions
     function setAddress(bytes32 id, address newAddress) external override {}
     function setAddressAsProxy(bytes32 id, address newImplementationAddress) external override {}
     function getAddress(bytes32 id) external view override returns (address) { return address(0); }
     function getMarketId() external view override returns (string memory) { return ""; }
     function setMarketId(string calldata newMarketId) external override {}
-    function setPoolImpl(address newPoolImpl) external override {}
-    function setPoolConfiguratorImpl(address newPoolConfiguratorImpl) external override {}
+    function setPoolConfiguratorImpl(address newPoolConfiguratorImpl) external override {
+        poolConfigurator = newPoolConfiguratorImpl;
+    }
     function setPriceOracle(address newPriceOracle) external override {}
     function getPriceOracle() external view override returns (address) { return address(0); }
     function setACLManager(address newAclManager) external override {}
